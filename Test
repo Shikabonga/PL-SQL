@@ -1,0 +1,312 @@
+--Создание таблицы MESSAGES SQL запросом
+CREATE TABLE MESSAGES
+( MESSAGES_ID number(6) NOT NULL,
+  MSG_TEXT varchar2(250) NOT NULL,
+  MSG_TYPE varchar2(50) NOT NULL,
+  DEST_ADDR varchar2(25), 
+  MSG_STATE number(1) DEFAULT 0, 
+  
+  CONSTRAINT MESSAGES_pkg PRIMARY KEY (MESSAGES_ID) --Первичный ключ
+);
+--Создание последовательности для messages_id
+CREATE SEQUENCE messages_seq START WITH 1; --Создание последовательности для ID
+
+--Добавление полей в таблицу EMPLOYEES
+ALTER TABLE EMPLOYEES
+  ADD (
+        UPD_COUNTER number(6) DEFAULT 0,
+        CRT_USER varchar2(25),
+        CRT_DATE date, 
+        UPD_USER varchar2(25), 
+        UPD_DATE date 
+    );
+
+--Триггер для ID в таблице MESSAGES
+CREATE OR REPLACE trigger MESSAGES_MESSAGE_ID_TRG
+BEFORE INSERT ON messages
+for each ROW
+BEGIN
+  IF :new.messages_id IS NULL THEN
+    SELECT messages_seq.nextval INTO :new.messages_id FROM sys.dual;
+  END IF;
+END;
+
+--Триггер для обработки событий DML таблицы EMPLOYEES
+CREATE OR REPLACE TRIGGER TRG_DML_EMPLOYEES 
+BEFORE INSERT OR UPDATE ON EMPLOYEES 
+FOR EACH ROW
+BEGIN
+    IF INSERTING THEN
+        :new.crt_user:=USER;
+        :new.crt_date:=SYSDATE;
+    ELSIF UPDATING THEN
+        :new.upd_user:=USER;
+        :new.upd_date:=SYSDATE;
+    END IF;      
+END;
+/
+
+--пакет tabEMPLOYEES для обработки операций чтения/записи данных в таблицу EMPLOYEES
+CREATE OR REPLACE PACKAGE tabEMPLOYEES IS --Спецификация
+    PROCEDURE sel(
+            p_id IN EMPLOYEES.EMPLOYEE_ID%TYPE, 
+            p_row OUT EMPLOYEES%ROWTYPE, 
+            p_forUpdate IN BOOLEAN := FALSE, 
+            p_rase IN BOOLEAN := TRUE);
+        
+    PROCEDURE ins(
+            p_row IN EMPLOYEES%ROWTYPE, 
+            p_update IN BOOLEAN := FALSE);
+        
+    PROCEDURE upd(
+            p_row IN EMPLOYEES%ROWTYPE, 
+            p_insert IN BOOLEAN := FALSE);
+        
+    PROCEDURE del(
+            p_id IN EMPLOYEES.EMPLOYEE_ID%TYPE);
+            
+    FUNCTION exists(p_id IN EMPLOYEES.EMPLOYEE_ID%TYPE) RETURN BOOLEAN;
+
+END tabEMPLOYEES; 
+/
+
+create or replace PACKAGE BODY tabEMPLOYEES IS
+    
+    PROCEDURE sel(
+            p_id IN EMPLOYEES.EMPLOYEE_ID%TYPE, 
+            p_row OUT EMPLOYEES%ROWTYPE, 
+            p_forUpdate IN BOOLEAN := FALSE, 
+            p_rase IN BOOLEAN := TRUE) IS
+        BEGIN
+            IF p_forUpdate
+            THEN
+                SELECT * INTO p_row FROM employees WHERE employees.employee_id = p_id FOR UPDATE;
+            ELSE
+                SELECT * INTO p_row FROM employees WHERE employees.employee_id = p_id;
+            END IF;
+        END sel;
+
+    PROCEDURE ins(
+            p_row IN EMPLOYEES%ROWTYPE, 
+            p_update IN BOOLEAN := FALSE) IS
+        BEGIN
+            IF p_update = TRUE
+            THEN
+                UPDATE employees SET ROW = p_row WHERE p_row.employee_id = employees.employee_id;
+            ELSE
+                INSERT INTO employees VALUES p_row;
+            END IF;
+        END ins;
+
+    PROCEDURE upd(
+            p_row IN EMPLOYEES%ROWTYPE, 
+            p_insert IN BOOLEAN := FALSE) IS
+        BEGIN
+            IF p_insert = FALSE
+            THEN
+                UPDATE employees SET ROW = p_row WHERE p_row.employee_id = employees.employee_id;
+            ELSE
+                INSERT INTO employees VALUES p_row;
+            END IF;
+        END upd;
+
+    PROCEDURE del(
+            p_id IN EMPLOYEES.EMPLOYEE_ID%TYPE) IS
+        BEGIN
+            DELETE FROM employees WHERE employees.employee_id = p_id;
+        END del;
+
+    FUNCTION exists(p_id IN EMPLOYEES.EMPLOYEE_ID%TYPE) RETURN BOOLEAN IS
+        CURSOR cur IS SELECT 1 from employees where employees.employee_id=p_id; 
+        found boolean := false; 
+    BEGIN
+        OPEN cur; 
+        found := cur%found;
+        CLOSE cur;    
+        RETURN found;
+    END exists;           
+END;
+/
+-- пакет entEMPLOYEES для обработки бизнес-логики объектов из таблицы EMPLOYEES 
+create or replace PACKAGE entEMPLOYEES IS
+    
+    PROCEDURE employment(
+        FIRST_NAME EMPLOYEES.FIRST_NAME%TYPE, 
+        LAST_NAME EMPLOYEES.LAST_NAME%TYPE, 
+        EMAIL EMPLOYEES.EMAIL%TYPE, 
+        PHONE_NUMBER EMPLOYEES.PHONE_NUMBER%TYPE, 
+        JOB_ID EMPLOYEES.JOB_ID%TYPE, 
+        DEPARTMENT_ID EMPLOYEES.DEPARTMENT_ID%TYPE, 
+        SALARY EMPLOYEES.SALARY%TYPE, 
+        COMMISSION_PCT EMPLOYEES.COMMISSION_PCT%TYPE);
+
+    PROCEDURE payrise(EMPLOYEE_ID EMPLOYEES.EMPLOYEE_ID%TYPE, SALARY EMPLOYEES.SALARY%TYPE);
+    PROCEDURE leave(EMPLOYEE_ID EMPLOYEES.EMPLOYEE_ID%TYPE);
+END entEMPLOYEES;
+/
+--Тело пакета
+create or replace PACKAGE BODY entEMPLOYEES IS
+    
+    PROCEDURE employment(
+        FIRST_NAME EMPLOYEES.FIRST_NAME%TYPE, 
+        LAST_NAME EMPLOYEES.LAST_NAME%TYPE, 
+        EMAIL EMPLOYEES.EMAIL%TYPE, 
+        PHONE_NUMBER EMPLOYEES.PHONE_NUMBER%TYPE, 
+        JOB_ID EMPLOYEES.JOB_ID%TYPE, 
+        DEPARTMENT_ID EMPLOYEES.DEPARTMENT_ID%TYPE, 
+        SALARY EMPLOYEES.SALARY%TYPE, 
+        COMMISSION_PCT EMPLOYEES.COMMISSION_PCT%TYPE) IS
+        
+    l_salary EMPLOYEES.SALARY%TYPE;
+    l_commission_pct EMPLOYEES.COMMISSION_PCT%TYPE;
+    l_emp EMPLOYEES%ROWTYPE;
+    l_job_title JOBS.JOB_TITLE%TYPE;
+    l_msg MESSAGES.MSG_TEXT%TYPE;
+    
+    TYPE mng_type IS RECORD(
+        department_name DEPARTMENTS.DEPARTMENT_NAME%TYPE,
+        first_name EMPLOYEES.FIRST_NAME%TYPE,
+        last_name EMPLOYEES.LAST_NAME%TYPE,
+        email EMPLOYEES.EMAIL%TYPE,
+        job_title JOBS.JOB_TITLE%TYPE
+      );
+    l_mng mng_type;
+
+    BEGIN
+    IF employment.SALARY IS NULL
+        THEN 
+            SELECT AVG(EMPLOYEES.SALARY) INTO l_salary FROM EMPLOYEES 
+            WHERE EMPLOYEES.job_id=JOB_ID AND employees.department_id = employment.DEPARTMENT_ID;
+            l_emp.salary := l_salary;
+        ELSE
+            l_emp.salary := employment.SALARY;
+        END IF;
+
+    IF employment.COMMISSION_PCT IS NULL
+        THEN 
+            SELECT AVG(EMPLOYEES.COMMISSION_PCT) INTO l_commission_pct FROM EMPLOYEES
+            WHERE EMPLOYEES.job_id=JOB_ID AND employees.department_id = employment.DEPARTMENT_ID;
+            l_emp.commission_pct := l_commission_pct;
+        ELSE
+            l_emp.commission_pct := employment.commission_pct;
+    END IF;
+
+    l_emp.first_name := employment.first_name;
+    l_emp.last_name := employment.last_name;
+    l_emp.email := employment.email;
+    l_emp.phone_number := employment.phone_number;
+    l_emp.job_id := employment.job_id;
+    l_emp.department_id := employment.department_id;
+    l_emp.hire_date := SYSDATE;
+
+    tabemployees.ins(l_emp);
+    
+    SELECT
+        d.department_name,e.first_name,e.last_name,e.email,j.job_title
+    INTO l_mng
+    FROM departments d
+    INNER JOIN employees e ON d.manager_id=e.employee_id
+    INNER JOIN jobs j ON e.job_id=j.job_id 
+    WHERE d.department_id = employment.department_id;
+    
+    SELECT job_title INTO l_job_title FROM jobs WHERE l_emp.job_id = jobs.job_id;
+    
+    l_msg:= 'Уважаемый '||first_name||' '||last_name||'! Вы приняты в качестве '||l_job_title||' в подразделение '||l_mng.department_name||'. Ваш руководитель: '||l_mng.job_title||' '||l_mng.first_name||' '||l_mng.last_name||'.';
+    INSERT INTO messages(msg_text,msg_type,dest_addr) VALUES(l_msg,'email',email);
+    
+    l_msg:= 'Уважаемый' ||l_mng.first_name||' '||l_mng.last_name||'! В ваше подразделение принят новый сотрудник '||first_name||' '||last_name||' в должности '||l_job_title||'с окладом '||l_emp.salary||'.';
+    INSERT INTO messages(msg_text,msg_type,dest_addr) VALUES(l_msg,'email',l_mng.email);
+    COMMIT;
+
+    EXCEPTION
+        WHEN OTHERS THEN
+        DBMS_OUTPUT.PUT_LINE(SQLCODE||'---'||SQLERRM);
+    END;
+
+    PROCEDURE payrise(EMPLOYEE_ID EMPLOYEES.EMPLOYEE_ID%TYPE, SALARY EMPLOYEES.SALARY%TYPE) IS
+    l_max_salary JOBS.MAX_SALARY%TYPE;
+    l_salary EMPLOYEES.SALARY%TYPE;
+    l_new_salary EMPLOYEES.SALARY%TYPE;
+    excess_salary EXCEPTION;
+    
+    TYPE payrise_emp_type IS RECORD(
+        first_name EMPLOYEES.FIRST_NAME%TYPE,
+        last_name EMPLOYEES.LAST_NAME%TYPE,
+        mng_first_name EMPLOYEES.FIRST_NAME%TYPE,
+        mng_last_name EMPLOYEES.LAST_NAME%TYPE,
+        mng_email EMPLOYEES.EMAIL%TYPE
+      );
+    l_tmp payrise_emp_type;
+    l_msg MESSAGES.MSG_TEXT%TYPE;;
+    
+    BEGIN
+        SELECT 
+            j.max_salary
+        INTO l_max_salary
+        FROM
+            employees e
+        INNER JOIN
+            JOBS j ON e.job_id = j.job_id
+        WHERE
+            e.employee_id = payrise.EMPLOYEE_ID;
+
+        SELECT e.salary INTO l_salary
+        FROM employees e 
+        WHERE e.employee_id = payrise.employee_id;
+
+        IF payrise.salary is null
+            THEN l_new_salary := l_salary * 1.1;
+        ELSE
+            l_new_salary := salary;
+        END IF;
+
+        IF l_new_salary > l_max_salary
+            THEN RAISE excess_salary;
+        END IF;
+
+        UPDATE employees SET salary = l_new_salary 
+        WHERE payrise.employee_id = employees.employee_id;
+        
+        SELECT e.first_name,e.last_name,em.first_name,em.last_name,em.email
+        INTO l_tmp
+        FROM employees e
+        INNER JOIN employees em ON e.manager_id=em.employee_id
+        WHERE e.employee_id=payrise.employee_id;
+
+        l_msg:='Уважаемый '||l_tmp.mng_first_name||' '||l_tmp.mng_last_name||'! Вашему сотруднику '||l_tmp.first_name||' '||l_tmp.last_name||' увеличен оклад с'||l_salary||' до '||l_new_salary ;
+        INSERT INTO messages(msg_text,msg_type,dest_addr) VALUES(l_msg,'email',l_tmp.mng_email);
+        
+        COMMIT;
+
+    EXCEPTION
+        WHEN excess_salary THEN dbms_output.put_line('Превышение допустимой з/платы');
+    END;
+
+    PROCEDURE leave(EMPLOYEE_ID EMPLOYEES.EMPLOYEE_ID%TYPE) IS
+    TYPE leave_emp_type IS RECORD(
+        first_name EMPLOYEES.FIRST_NAME%TYPE,
+        last_name EMPLOYEES.LAST_NAME%TYPE,
+        job_title JOBS.JOB_TITLE%TYPE,
+        mng_first_name EMPLOYEES.FIRST_NAME%TYPE,
+        mng_last_name EMPLOYEES.LAST_NAME%TYPE,
+        mng_email EMPLOYEES.EMAIL%TYPE
+      );
+    l_tmp leave_emp_type;
+    l_msg MESSAGES.MSG_TEXT%TYPE;;
+    
+    BEGIN
+        UPDATE employees SET employees.department_id = NULL WHERE leave.employee_id = employees.employee_id;
+        
+        SELECT e.first_name,e.last_name,j.job_title,em.first_name,em.last_name,em.email
+        INTO l_tmp
+        FROM employees e
+        INNER JOIN jobs j ON j.job_id=e.job_id
+        INNER JOIN employees em ON e.manager_id=em.employee_id
+        WHERE e.employee_id=leave.employee_id;
+
+        l_msg:='Уважаемый '||l_tmp.mng_first_name||' '||l_tmp.mng_last_name||'! Из вашего подразделения уволен сотрудник '||l_tmp.first_name||' '||l_tmp.last_name||' с должности '||l_tmp.job_title||'.';
+        INSERT INTO messages(msg_text,msg_type,dest_addr) VALUES(l_msg,'email',l_tmp.mng_email);
+        COMMIT;
+    END;
+END;
+/
